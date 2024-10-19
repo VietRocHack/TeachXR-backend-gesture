@@ -12,6 +12,11 @@ from collections import deque
 import datetime
 import os
 import time
+import requests
+import io
+
+# OCR server details
+OCR_SERVER_URL = "http://192.168.86.115:5000/ocr"
 
 def get_window_rect(window_title):
     hwnd = win32gui.FindWindow(None, window_title)
@@ -60,6 +65,29 @@ def capture_window(window_title, capture_width, capture_height):
     else:
         return None
 
+def send_image_to_ocr(image):
+    try:
+        # Convert numpy array to PIL Image
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        
+        # Save image to a byte buffer
+        img_byte_arr = io.BytesIO()
+        pil_image.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+
+        # Prepare the file for sending
+        files = {'image': ('image.png', img_byte_arr, 'image/png')}
+
+        # Send POST request to OCR server
+        response = requests.post(OCR_SERVER_URL, files=files)
+
+        if response.status_code == 200:
+            return "OCR processing successful"
+        else:
+            return f"OCR processing failed: {response.status_code}"
+    except Exception as e:
+        return f"Error sending image to OCR: {str(e)}"
+
 # Initialize MediaPipe
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
@@ -103,6 +131,11 @@ crop_display_duration = 10  # Display cropped image for 10 seconds
 
 # Cooldown duration in seconds
 cooldown_duration = 5
+
+# Initialize OCR sending status
+ocr_status = ""
+ocr_status_time = 0
+ocr_status_duration = 20  # Display OCR status for 5 seconds
 
 while True:
     # Capture window content
@@ -164,8 +197,9 @@ while True:
                 if valid_coords:
                     # Calculate bounding box with 100px margin on each side
                     x_coords, y_coords = zip(*valid_coords)
-                    min_x, max_x = max(0, min(x_coords) - 100), min(capture_width, max(x_coords) + 100)
-                    min_y, max_y = max(0, min(y_coords) - 100), min(capture_height, max(y_coords) + 100)
+                    EXTRA_SIDE_LENGTH = 20
+                    min_x, max_x = max(0, min(x_coords) - EXTRA_SIDE_LENGTH), min(capture_width, max(x_coords) + EXTRA_SIDE_LENGTH)
+                    min_y, max_y = max(0, min(y_coords) - EXTRA_SIDE_LENGTH), min(capture_height, max(y_coords) + EXTRA_SIDE_LENGTH)
 
                     # Crop the original image
                     cropped_image = original_image[min_y:max_y, min_x:max_x]
@@ -175,6 +209,10 @@ while True:
                     filename = f"cropped_{timestamp}.png"
                     cv2.imwrite(filename, cv2.cvtColor(cropped_image, cv2.COLOR_RGB2BGR))
                     print(f"Saved cropped image: {filename}")
+
+                    # Send the cropped image to OCR server
+                    ocr_status = send_image_to_ocr(cropped_image)
+                    ocr_status_time = current_time
 
                     # Clear the coordinates
                     index_finger_coords.clear()
@@ -208,12 +246,16 @@ while True:
 
     # Create a semi-transparent overlay for the status background
     overlay = display_image.copy()
-    cv2.rectangle(overlay, (0, 0), (400, 100), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (0, 0), (400, 140), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.5, display_image, 0.5, 0, display_image)
 
     # Display gesture text and status on the semi-transparent background
     cv2.putText(display_image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     cv2.putText(display_image, status_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, status_color, 2)
+
+    # Display OCR sending status
+    if current_time - ocr_status_time < ocr_status_duration:
+        cv2.putText(display_image, ocr_status, (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
 
     # Display cropped image and success message if within display duration
     if cropped_image is not None and current_time - crop_display_start_time < crop_display_duration:
