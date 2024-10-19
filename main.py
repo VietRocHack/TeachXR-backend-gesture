@@ -11,6 +11,7 @@ from PIL import Image
 from collections import deque
 import datetime
 import os
+import time
 
 def get_window_rect(window_title):
     hwnd = win32gui.FindWindow(None, window_title)
@@ -92,16 +93,22 @@ cv2.resizeWindow("Right Hand Gesture Recognition", capture_width, capture_height
 # Initialize deque to store index finger tip coordinates
 index_finger_coords = deque(maxlen=20)
 
+# Initialize last crop time
+last_crop_time = 0
+
 while True:
     # Capture window content
-    image = capture_window(window_title, capture_width, capture_height)
+    original_image = capture_window(window_title, capture_width, capture_height)
     
-    if image is None:
+    if original_image is None:
         print("Failed to capture window content")
         continue
 
+    # Create a copy of the original image for drawing
+    display_image = original_image.copy()
+
     # Create MediaPipe image directly from the captured image
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=original_image)
 
     # Recognize gestures in the input image
     recognition_result = recognizer.recognize(mp_image)
@@ -113,23 +120,23 @@ while True:
             top_gesture = recognition_result.gestures[0][0]
             hand_landmarks = recognition_result.hand_landmarks[0]
 
-            # Draw hand landmarks
+            # Draw hand landmarks on the display image
             hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
             hand_landmarks_proto.landmark.extend([
                 landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
                 for landmark in hand_landmarks
             ])
             mp_drawing.draw_landmarks(
-                image,
+                display_image,
                 hand_landmarks_proto,
                 mp_hands.HAND_CONNECTIONS,
                 mp_drawing_styles.get_default_hand_landmarks_style(),
                 mp_drawing_styles.get_default_hand_connections_style()
             )
 
-            # Display gesture
+            # Display gesture on the display image
             gesture_text = f"Right Hand: {top_gesture.category_name} ({top_gesture.score:.2f})"
-            cv2.putText(image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(display_image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
             # If pointing up gesture is detected, save index finger tip coordinates
             if top_gesture.category_name == "Pointing_Up":
@@ -138,22 +145,23 @@ while True:
                 y = int(index_finger_tip.y * capture_height)
                 index_finger_coords.append((x, y))
 
-                # Draw a circle at the index finger tip
-                cv2.circle(image, (x, y), 10, (0, 0, 255), -1)
+                # Draw a circle at the index finger tip on the display image
+                cv2.circle(display_image, (x, y), 10, (0, 0, 255), -1)
 
-            # Draw the trajectory of the index finger tip
+            # Draw the trajectory of the index finger tip on the display image
             for i in range(1, len(index_finger_coords)):
-                cv2.line(image, index_finger_coords[i-1], index_finger_coords[i], (255, 0, 0), 2)
+                cv2.line(display_image, index_finger_coords[i-1], index_finger_coords[i], (255, 0, 0), 2)
 
             # If thumbs up gesture is detected, crop and save the image
-            if top_gesture.category_name == "Thumb_Up" and len(index_finger_coords) > 0:
-                # Calculate bounding box
+            current_time = time.time()
+            if top_gesture.category_name == "Thumb_Up" and len(index_finger_coords) > 0 and current_time - last_crop_time > 5:
+                # Calculate bounding box with 100px margin on each side
                 x_coords, y_coords = zip(*index_finger_coords)
-                min_x, max_x = max(0, min(x_coords) - 20), min(capture_width, max(x_coords) + 20)
-                min_y, max_y = max(0, min(y_coords) - 20), min(capture_height, max(y_coords) + 20)
+                min_x, max_x = max(0, min(x_coords) - 100), min(capture_width, max(x_coords) + 100)
+                min_y, max_y = max(0, min(y_coords) - 100), min(capture_height, max(y_coords) + 100)
 
-                # Crop the image
-                cropped_image = image[min_y:max_y, min_x:max_x]
+                # Crop the original image
+                cropped_image = original_image[min_y:max_y, min_x:max_x]
 
                 # Save the cropped image with timestamp
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -164,15 +172,18 @@ while True:
                 # Clear the coordinates
                 index_finger_coords.clear()
 
+                # Update last crop time
+                last_crop_time = current_time
+
         else:
             # If a hand is detected but it's not the right hand
-            cv2.putText(image, "No right hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            cv2.putText(display_image, "No right hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
     else:
         # If no hand is detected
-        cv2.putText(image, "No hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.putText(display_image, "No hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
     # Display the image
-    cv2.imshow('Right Hand Gesture Recognition', cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    cv2.imshow('Right Hand Gesture Recognition', cv2.cvtColor(display_image, cv2.COLOR_RGB2BGR))
 
     # Break the loop when 'q' is pressed
     if cv2.waitKey(1) & 0xFF == ord('q'):
