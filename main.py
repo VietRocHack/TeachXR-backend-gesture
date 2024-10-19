@@ -17,10 +17,10 @@ import io
 import threading
 
 # OCR server details
-OCR_SERVER_URL = "http://192.168.86.115:5000/ocr"
+OCR_SERVER_URL = "http://127.0.0.1:5000/ocr"
 
 # Bounding box padding
-BOUNDING_BOX_PADDING = 100
+BOUNDING_BOX_PADDING = 20
 
 def get_window_rect(window_title):
     hwnd = win32gui.FindWindow(None, window_title)
@@ -129,7 +129,7 @@ def main_loop():
     last_crop_time = 0
     cropped_image = None
     crop_display_start_time = 0
-    crop_display_duration = 10
+    crop_display_duration = 20
     cooldown_duration = 5
     ocr_status = ""
     ocr_status_time = 0
