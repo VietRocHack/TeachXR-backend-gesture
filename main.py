@@ -1,72 +1,63 @@
 import cv2
 import mediapipe as mp
-import numpy as np
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+from mediapipe.framework.formats import landmark_pb2
 
-# Initialize MediaPipe Hands
+# Initialize MediaPipe
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
-hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+mp_drawing_styles = mp.solutions.drawing_styles
 
-# Define custom gestures
-gestures = {
-    'Open Palm': [[0, 5, 17], [0, 9, 17], [0, 13, 17], [0, 17, 17]],
-    # 'Fist': [[0, 3, 6], [0, 3, 10], [0, 3, 14], [0, 3, 18]],
-    'Pointing': [[0, 8, 12], [0, 8, 16], [0, 8, 20]],
-    # 'Victory': [[0, 8, 12], [0, 12, 16], [0, 12, 20]],
-    'Thumbs Up': [[4, 8, 12], [4, 8, 16], [4, 8, 20]],
-    # Add more custom gestures here
-}
-
-def distance(p1, p2):
-    return np.sqrt(((p1.x - p2.x) ** 2) + ((p1.y - p2.y) ** 2))
-
-def check_gesture(landmarks, gesture_config):
-    for a, b, c in gesture_config:
-        dist_ab = distance(landmarks[a], landmarks[b])
-        dist_bc = distance(landmarks[b], landmarks[c])
-        if dist_ab >= dist_bc:
-            return False
-    return True
-
-def recognize_gesture(landmarks):
-    for gesture_name, gesture_config in gestures.items():
-        if check_gesture(landmarks, gesture_config):
-            return gesture_name
-    return "Unknown"
+# Initialize the GestureRecognizer
+base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
+options = vision.GestureRecognizerOptions(base_options=base_options)
+recognizer = vision.GestureRecognizer.create_from_options(options)
 
 # Initialize the webcam
 cap = cv2.VideoCapture(0)
 
 while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
-        print("Failed to grab frame")
-        break
+    success, image = cap.read()
+    if not success:
+        print("Ignoring empty camera frame.")
+        continue
 
-    # Flip the frame horizontally for a later selfie-view display
-    frame = cv2.flip(frame, 1)
+    # Convert the BGR image to RGB and process it with MediaPipe Pose
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
 
-    # Convert the BGR image to RGB
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    # Recognize gestures in the input image
+    recognition_result = recognizer.recognize(mp_image)
 
-    # Process the frame and detect hands
-    results = hands.process(rgb_frame)
+    # Draw hand landmarks and display gesture
+    if recognition_result.gestures and recognition_result.hand_landmarks:
+        top_gesture = recognition_result.gestures[0][0]
+        hand_landmarks = recognition_result.hand_landmarks[0]
 
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            # Draw hand landmarks
-            mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        # Draw hand landmarks
+        hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
+        hand_landmarks_proto.landmark.extend([
+            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
+            for landmark in hand_landmarks
+        ])
+        mp_drawing.draw_landmarks(
+            image,
+            hand_landmarks_proto,
+            mp_hands.HAND_CONNECTIONS,
+            mp_drawing_styles.get_default_hand_landmarks_style(),
+            mp_drawing_styles.get_default_hand_connections_style()
+        )
 
-            # Recognize gesture
-            gesture = recognize_gesture(hand_landmarks.landmark)
+        # Display gesture
+        gesture_text = f"{top_gesture.category_name} ({top_gesture.score:.2f})"
+        cv2.putText(image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-            # Display recognized gesture
-            cv2.putText(frame, f"Gesture: {gesture}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    # Display the image
+    cv2.imshow('MediaPipe Gesture Recognition', cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
-    # Display the frame
-    cv2.imshow('Hand Gesture Recognition', frame)
-
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    # Break the loop when 'q' is pressed
+    if cv2.waitKey(5) & 0xFF == ord('q'):
         break
 
 cap.release()
