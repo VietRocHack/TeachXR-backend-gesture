@@ -22,21 +22,17 @@ def get_window_rect(window_title):
     
     return {"top": y, "left": x, "width": w, "height": h}
 
-def capture_window(window_title):
+def capture_window(window_title, capture_width, capture_height):
     hwnd = win32gui.FindWindow(None, window_title)
     if not hwnd:
         raise Exception(f'Window not found: {window_title}')
-
-    left, top, right, bot = win32gui.GetClientRect(hwnd)
-    w = right - left
-    h = bot - top
 
     hwndDC = win32gui.GetWindowDC(hwnd)
     mfcDC  = win32ui.CreateDCFromHandle(hwndDC)
     saveDC = mfcDC.CreateCompatibleDC()
 
     saveBitMap = win32ui.CreateBitmap()
-    saveBitMap.CreateCompatibleBitmap(mfcDC, w, h)
+    saveBitMap.CreateCompatibleBitmap(mfcDC, capture_width, capture_height)
 
     saveDC.SelectObject(saveBitMap)
 
@@ -67,11 +63,19 @@ mp_drawing_styles = mp.solutions.drawing_styles
 
 # Initialize the GestureRecognizer
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
-options = vision.GestureRecognizerOptions(base_options=base_options)
+options = vision.GestureRecognizerOptions(
+    base_options=base_options,
+    num_hands=1,  # Detect only one hand
+    min_hand_detection_confidence=0.5,
+    min_hand_presence_confidence=0.5,
+    min_tracking_confidence=0.5
+)
 recognizer = vision.GestureRecognizer.create_from_options(options)
 
 # Specify the window title to capture
-window_title = "Casting"  # Change this to the title of the window you want to capture
+window_title = "Casting"  # Changed from "Notepad" to "Casting"
+capture_width = 1500  # Set capture width to 1500
+capture_height = 1500  # Set capture height to 1500
 
 try:
     window_rect = get_window_rect(window_title)
@@ -79,12 +83,12 @@ except Exception as e:
     print(f"Error: {e}")
     exit(1)
 
-cv2.namedWindow("Window Capture Gesture Recognition", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Window Capture Gesture Recognition", window_rect["width"], window_rect["height"])
+cv2.namedWindow("Right Hand Gesture Recognition", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Right Hand Gesture Recognition", capture_width, capture_height)
 
 while True:
     # Capture window content
-    image = capture_window(window_title)
+    image = capture_window(window_title, capture_width, capture_height)
     
     if image is None:
         print("Failed to capture window content")
@@ -96,31 +100,39 @@ while True:
     # Recognize gestures in the input image
     recognition_result = recognizer.recognize(mp_image)
 
-    # Draw hand landmarks and display gesture
+    # Draw hand landmarks and display gesture only for the right hand
     if recognition_result.gestures and recognition_result.hand_landmarks:
-        top_gesture = recognition_result.gestures[0][0]
-        hand_landmarks = recognition_result.hand_landmarks[0]
+        # Check if the detected hand is the right hand
+        if recognition_result.handedness[0][0].category_name == "Right":
+            top_gesture = recognition_result.gestures[0][0]
+            hand_landmarks = recognition_result.hand_landmarks[0]
 
-        # Draw hand landmarks
-        hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-        hand_landmarks_proto.landmark.extend([
-            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
-            for landmark in hand_landmarks
-        ])
-        mp_drawing.draw_landmarks(
-            image,
-            hand_landmarks_proto,
-            mp_hands.HAND_CONNECTIONS,
-            mp_drawing_styles.get_default_hand_landmarks_style(),
-            mp_drawing_styles.get_default_hand_connections_style()
-        )
+            # Draw hand landmarks
+            hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
+            hand_landmarks_proto.landmark.extend([
+                landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
+                for landmark in hand_landmarks
+            ])
+            mp_drawing.draw_landmarks(
+                image,
+                hand_landmarks_proto,
+                mp_hands.HAND_CONNECTIONS,
+                mp_drawing_styles.get_default_hand_landmarks_style(),
+                mp_drawing_styles.get_default_hand_connections_style()
+            )
 
-        # Display gesture
-        gesture_text = f"{top_gesture.category_name} ({top_gesture.score:.2f})"
-        cv2.putText(image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            # Display gesture
+            gesture_text = f"Right Hand: {top_gesture.category_name} ({top_gesture.score:.2f})"
+            cv2.putText(image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        else:
+            # If a hand is detected but it's not the right hand
+            cv2.putText(image, "No right hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    else:
+        # If no hand is detected
+        cv2.putText(image, "No hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
     # Display the image
-    cv2.imshow('Window Capture Gesture Recognition', cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    cv2.imshow('Right Hand Gesture Recognition', cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
     # Break the loop when 'q' is pressed
     if cv2.waitKey(1) & 0xFF == ord('q'):
