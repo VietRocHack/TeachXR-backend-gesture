@@ -65,14 +65,14 @@ mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
-# Initialize the GestureRecognizer
+# Initialize the GestureRecognizer with lower thresholds
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
 options = vision.GestureRecognizerOptions(
     base_options=base_options,
     num_hands=1,  # Detect only one hand
-    min_hand_detection_confidence=0.5,
-    min_hand_presence_confidence=0.5,
-    min_tracking_confidence=0.5
+    min_hand_detection_confidence=0.1,  # Lowered from 0.5
+    min_hand_presence_confidence=0.1,  # Lowered from 0.5
+    min_tracking_confidence=0.8  # Lowered from 0.5
 )
 recognizer = vision.GestureRecognizer.create_from_options(options)
 
@@ -95,6 +95,11 @@ index_finger_coords = deque(maxlen=20)
 
 # Initialize last crop time
 last_crop_time = 0
+
+# Initialize variables for displaying cropped image
+cropped_image = None
+crop_display_start_time = 0
+crop_display_duration = 3  # Display cropped image for 3 seconds
 
 while True:
     # Capture window content
@@ -172,8 +177,9 @@ while True:
                 # Clear the coordinates
                 index_finger_coords.clear()
 
-                # Update last crop time
+                # Update last crop time and start display timer
                 last_crop_time = current_time
+                crop_display_start_time = current_time
 
         else:
             # If a hand is detected but it's not the right hand
@@ -181,6 +187,26 @@ while True:
     else:
         # If no hand is detected
         cv2.putText(display_image, "No hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+    # Display cropped image and success message if within display duration
+    if cropped_image is not None and time.time() - crop_display_start_time < crop_display_duration:
+        # Resize cropped image to fit in the bottom right corner
+        display_height, display_width = display_image.shape[:2]
+        cropped_height, cropped_width = cropped_image.shape[:2]
+        max_cropped_height = int(display_height * 0.3)
+        max_cropped_width = int(display_width * 0.3)
+        scale = min(max_cropped_height / cropped_height, max_cropped_width / cropped_width)
+        resized_cropped = cv2.resize(cropped_image, (int(cropped_width * scale), int(cropped_height * scale)))
+
+        # Calculate position for cropped image
+        y_offset = display_height - resized_cropped.shape[0] - 10
+        x_offset = display_width - resized_cropped.shape[1] - 10
+
+        # Overlay cropped image on display image
+        display_image[y_offset:y_offset+resized_cropped.shape[0], x_offset:x_offset+resized_cropped.shape[1]] = resized_cropped
+
+        # Add success message
+        cv2.putText(display_image, "Image cropped!", (x_offset, y_offset - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
     # Display the image
     cv2.imshow('Right Hand Gesture Recognition', cv2.cvtColor(display_image, cv2.COLOR_RGB2BGR))
