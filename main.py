@@ -9,6 +9,8 @@ import win32ui
 from ctypes import windll
 from PIL import Image
 from collections import deque
+import datetime
+import os
 
 def get_window_rect(window_title):
     hwnd = win32gui.FindWindow(None, window_title)
@@ -142,6 +144,25 @@ while True:
             # Draw the trajectory of the index finger tip
             for i in range(1, len(index_finger_coords)):
                 cv2.line(image, index_finger_coords[i-1], index_finger_coords[i], (255, 0, 0), 2)
+
+            # If thumbs up gesture is detected, crop and save the image
+            if top_gesture.category_name == "Thumb_Up" and len(index_finger_coords) > 0:
+                # Calculate bounding box
+                x_coords, y_coords = zip(*index_finger_coords)
+                min_x, max_x = max(0, min(x_coords) - 20), min(capture_width, max(x_coords) + 20)
+                min_y, max_y = max(0, min(y_coords) - 20), min(capture_height, max(y_coords) + 20)
+
+                # Crop the image
+                cropped_image = image[min_y:max_y, min_x:max_x]
+
+                # Save the cropped image with timestamp
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"cropped_{timestamp}.png"
+                cv2.imwrite(filename, cv2.cvtColor(cropped_image, cv2.COLOR_RGB2BGR))
+                print(f"Saved cropped image: {filename}")
+
+                # Clear the coordinates
+                index_finger_coords.clear()
 
         else:
             # If a hand is detected but it's not the right hand
