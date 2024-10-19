@@ -70,9 +70,9 @@ base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
 options = vision.GestureRecognizerOptions(
     base_options=base_options,
     num_hands=1,  # Detect only one hand
-    min_hand_detection_confidence=0.1,  # Lowered from 0.5
-    min_hand_presence_confidence=0.1,  # Lowered from 0.5
-    min_tracking_confidence=0.8  # Lowered from 0.5
+    min_hand_detection_confidence=0.3,
+    min_hand_presence_confidence=0.3,
+    min_tracking_confidence=0.3
 )
 recognizer = vision.GestureRecognizer.create_from_options(options)
 
@@ -90,8 +90,8 @@ except Exception as e:
 cv2.namedWindow("Right Hand Gesture Recognition", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("Right Hand Gesture Recognition", capture_width, capture_height)
 
-# Initialize deque to store index finger tip coordinates
-index_finger_coords = deque(maxlen=20)
+# Initialize deque to store index finger tip coordinates with timestamps
+index_finger_coords = deque(maxlen=100)  # Increased maxlen to store more coordinates
 
 # Initialize last crop time
 last_crop_time = 0
@@ -99,7 +99,10 @@ last_crop_time = 0
 # Initialize variables for displaying cropped image
 cropped_image = None
 crop_display_start_time = 0
-crop_display_duration = 3  # Display cropped image for 3 seconds
+crop_display_duration = 10  # Display cropped image for 10 seconds
+
+# Cooldown duration in seconds
+cooldown_duration = 5
 
 while True:
     # Capture window content
@@ -117,6 +120,9 @@ while True:
 
     # Recognize gestures in the input image
     recognition_result = recognizer.recognize(mp_image)
+
+    # Initialize gesture_text
+    gesture_text = "No hand detected"
 
     # Draw hand landmarks and display gesture only for the right hand
     if recognition_result.gestures and recognition_result.hand_landmarks:
@@ -139,57 +145,78 @@ while True:
                 mp_drawing_styles.get_default_hand_connections_style()
             )
 
-            # Display gesture on the display image
+            # Update gesture text
             gesture_text = f"Right Hand: {top_gesture.category_name} ({top_gesture.score:.2f})"
-            cv2.putText(display_image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-            # If pointing up gesture is detected, save index finger tip coordinates
+            # If pointing up gesture is detected, save index finger tip coordinates with timestamp
             if top_gesture.category_name == "Pointing_Up":
                 index_finger_tip = hand_landmarks[8]  # Index 8 corresponds to the tip of the index finger
                 x = int(index_finger_tip.x * capture_width)
                 y = int(index_finger_tip.y * capture_height)
-                index_finger_coords.append((x, y))
+                index_finger_coords.append((x, y, time.time()))
 
-                # Draw a circle at the index finger tip on the display image
-                cv2.circle(display_image, (x, y), 10, (0, 0, 255), -1)
-
-            # Draw the trajectory of the index finger tip on the display image
-            for i in range(1, len(index_finger_coords)):
-                cv2.line(display_image, index_finger_coords[i-1], index_finger_coords[i], (255, 0, 0), 2)
-
-            # If thumbs up gesture is detected, crop and save the image
+            # Check if thumbs up gesture is detected and cooldown has passed
             current_time = time.time()
-            if top_gesture.category_name == "Thumb_Up" and len(index_finger_coords) > 0 and current_time - last_crop_time > 5:
-                # Calculate bounding box with 100px margin on each side
-                x_coords, y_coords = zip(*index_finger_coords)
-                min_x, max_x = max(0, min(x_coords) - 100), min(capture_width, max(x_coords) + 100)
-                min_y, max_y = max(0, min(y_coords) - 100), min(capture_height, max(y_coords) + 100)
+            if top_gesture.category_name == "Thumb_Up" and len(index_finger_coords) > 0 and current_time - last_crop_time > cooldown_duration:
+                # Filter coordinates that are less than 5 seconds old
+                valid_coords = [(x, y) for x, y, t in index_finger_coords if current_time - t <= 5]
 
-                # Crop the original image
-                cropped_image = original_image[min_y:max_y, min_x:max_x]
+                if valid_coords:
+                    # Calculate bounding box with 100px margin on each side
+                    x_coords, y_coords = zip(*valid_coords)
+                    min_x, max_x = max(0, min(x_coords) - 100), min(capture_width, max(x_coords) + 100)
+                    min_y, max_y = max(0, min(y_coords) - 100), min(capture_height, max(y_coords) + 100)
 
-                # Save the cropped image with timestamp
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"cropped_{timestamp}.png"
-                cv2.imwrite(filename, cv2.cvtColor(cropped_image, cv2.COLOR_RGB2BGR))
-                print(f"Saved cropped image: {filename}")
+                    # Crop the original image
+                    cropped_image = original_image[min_y:max_y, min_x:max_x]
 
-                # Clear the coordinates
-                index_finger_coords.clear()
+                    # Save the cropped image with timestamp
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"cropped_{timestamp}.png"
+                    cv2.imwrite(filename, cv2.cvtColor(cropped_image, cv2.COLOR_RGB2BGR))
+                    print(f"Saved cropped image: {filename}")
 
-                # Update last crop time and start display timer
-                last_crop_time = current_time
-                crop_display_start_time = current_time
+                    # Clear the coordinates
+                    index_finger_coords.clear()
+
+                    # Update last crop time and start display timer
+                    last_crop_time = current_time
+                    crop_display_start_time = current_time
 
         else:
             # If a hand is detected but it's not the right hand
-            cv2.putText(display_image, "No right hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            gesture_text = "No right hand detected"
+
+    # Remove coordinates older than 5 seconds
+    current_time = time.time()
+    index_finger_coords = deque([(x, y, t) for x, y, t in index_finger_coords if current_time - t <= 5], maxlen=100)
+
+    # Draw the trajectory of the index finger tip on the display image
+    for i in range(1, len(index_finger_coords)):
+        cv2.line(display_image, (index_finger_coords[i-1][0], index_finger_coords[i-1][1]), 
+                 (index_finger_coords[i][0], index_finger_coords[i][1]), (255, 0, 0), 2)
+
+    # Display croppable status
+    time_since_last_crop = current_time - last_crop_time
+    if time_since_last_crop > cooldown_duration:
+        status_text = "CROPPABLE"
+        status_color = (0, 255, 0)  # Green
     else:
-        # If no hand is detected
-        cv2.putText(display_image, "No hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        time_left = max(0, cooldown_duration - time_since_last_crop)
+        status_text = f"NOT CROPPABLE (Cooldown: {time_left:.1f}s)"
+        status_color = (0, 0, 255)  # Red
+
+    # Create a semi-transparent overlay for the status background
+    overlay = display_image.copy()
+    cv2.rectangle(overlay, (0, 0), (400, 100), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, display_image, 0.5, 0, display_image)
+
+    # Display gesture text and status on the semi-transparent background
+    cv2.putText(display_image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    cv2.putText(display_image, status_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, status_color, 2)
 
     # Display cropped image and success message if within display duration
-    if cropped_image is not None and time.time() - crop_display_start_time < crop_display_duration:
+    if cropped_image is not None and current_time - crop_display_start_time < crop_display_duration:
         # Resize cropped image to fit in the bottom right corner
         display_height, display_width = display_image.shape[:2]
         cropped_height, cropped_width = cropped_image.shape[:2]
