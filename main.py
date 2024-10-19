@@ -14,9 +14,13 @@ import os
 import time
 import requests
 import io
+import threading
 
 # OCR server details
 OCR_SERVER_URL = "http://192.168.86.115:5000/ocr"
+
+# Bounding box padding
+BOUNDING_BOX_PADDING = 100
 
 def get_window_rect(window_title):
     hwnd = win32gui.FindWindow(None, window_title)
@@ -65,7 +69,7 @@ def capture_window(window_title, capture_width, capture_height):
     else:
         return None
 
-def send_image_to_ocr(image):
+def send_image_to_ocr(image, callback):
     try:
         # Convert numpy array to PIL Image
         pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -82,11 +86,12 @@ def send_image_to_ocr(image):
         response = requests.post(OCR_SERVER_URL, files=files)
 
         if response.status_code == 200:
-            return "OCR processing successful"
+            ocr_text = response.text  # Get raw text from response
+            callback("OCR processing successful", ocr_text)
         else:
-            return f"OCR processing failed: {response.status_code}"
+            callback(f"OCR processing failed: {response.status_code}", '')
     except Exception as e:
-        return f"Error sending image to OCR: {str(e)}"
+        callback(f"Error sending image to OCR: {str(e)}", '')
 
 # Initialize MediaPipe
 mp_hands = mp.solutions.hands
@@ -118,170 +123,197 @@ except Exception as e:
 cv2.namedWindow("Right Hand Gesture Recognition", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("Right Hand Gesture Recognition", capture_width, capture_height)
 
-# Initialize deque to store index finger tip coordinates with timestamps
-index_finger_coords = deque(maxlen=100)  # Increased maxlen to store more coordinates
+def main_loop():
+    # Initialize variables
+    index_finger_coords = deque(maxlen=100)
+    last_crop_time = 0
+    cropped_image = None
+    crop_display_start_time = 0
+    crop_display_duration = 10
+    cooldown_duration = 5
+    ocr_status = ""
+    ocr_status_time = 0
+    ocr_status_duration = 5
+    ocr_result_text = ""
 
-# Initialize last crop time
-last_crop_time = 0
+    def ocr_callback(status, text):
+        nonlocal ocr_status, ocr_result_text, ocr_status_time
+        ocr_status = status
+        ocr_result_text = text
+        ocr_status_time = time.time()
 
-# Initialize variables for displaying cropped image
-cropped_image = None
-crop_display_start_time = 0
-crop_display_duration = 10  # Display cropped image for 10 seconds
+    while True:
+        # Capture window content
+        original_image = capture_window(window_title, capture_width, capture_height)
+        
+        if original_image is None:
+            print("Failed to capture window content")
+            continue
 
-# Cooldown duration in seconds
-cooldown_duration = 5
+        # Create a copy of the original image for drawing
+        display_image = original_image.copy()
 
-# Initialize OCR sending status
-ocr_status = ""
-ocr_status_time = 0
-ocr_status_duration = 20  # Display OCR status for 5 seconds
+        # Create MediaPipe image directly from the captured image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=original_image)
 
-while True:
-    # Capture window content
-    original_image = capture_window(window_title, capture_width, capture_height)
-    
-    if original_image is None:
-        print("Failed to capture window content")
-        continue
+        # Recognize gestures in the input image
+        recognition_result = recognizer.recognize(mp_image)
 
-    # Create a copy of the original image for drawing
-    display_image = original_image.copy()
+        # Initialize gesture_text
+        gesture_text = "No hand detected"
 
-    # Create MediaPipe image directly from the captured image
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=original_image)
+        # Draw hand landmarks and display gesture only for the right hand
+        if recognition_result.gestures and recognition_result.hand_landmarks:
+            # Check if the detected hand is the right hand
+            if recognition_result.handedness[0][0].category_name == "Right":
+                top_gesture = recognition_result.gestures[0][0]
+                hand_landmarks = recognition_result.hand_landmarks[0]
 
-    # Recognize gestures in the input image
-    recognition_result = recognizer.recognize(mp_image)
+                # Draw hand landmarks on the display image
+                hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
+                hand_landmarks_proto.landmark.extend([
+                    landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
+                    for landmark in hand_landmarks
+                ])
+                mp_drawing.draw_landmarks(
+                    display_image,
+                    hand_landmarks_proto,
+                    mp_hands.HAND_CONNECTIONS,
+                    mp_drawing_styles.get_default_hand_landmarks_style(),
+                    mp_drawing_styles.get_default_hand_connections_style()
+                )
 
-    # Initialize gesture_text
-    gesture_text = "No hand detected"
+                # Update gesture text
+                gesture_text = f"Right Hand: {top_gesture.category_name} ({top_gesture.score:.2f})"
 
-    # Draw hand landmarks and display gesture only for the right hand
-    if recognition_result.gestures and recognition_result.hand_landmarks:
-        # Check if the detected hand is the right hand
-        if recognition_result.handedness[0][0].category_name == "Right":
-            top_gesture = recognition_result.gestures[0][0]
-            hand_landmarks = recognition_result.hand_landmarks[0]
+                # If pointing up gesture is detected, save index finger tip coordinates with timestamp
+                if top_gesture.category_name == "Pointing_Up":
+                    index_finger_tip = hand_landmarks[8]  # Index 8 corresponds to the tip of the index finger
+                    x = int(index_finger_tip.x * capture_width)
+                    y = int(index_finger_tip.y * capture_height)
+                    index_finger_coords.append((x, y, time.time()))
 
-            # Draw hand landmarks on the display image
-            hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-            hand_landmarks_proto.landmark.extend([
-                landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) 
-                for landmark in hand_landmarks
-            ])
-            mp_drawing.draw_landmarks(
-                display_image,
-                hand_landmarks_proto,
-                mp_hands.HAND_CONNECTIONS,
-                mp_drawing_styles.get_default_hand_landmarks_style(),
-                mp_drawing_styles.get_default_hand_connections_style()
-            )
+                # Check if thumbs up gesture is detected and cooldown has passed
+                current_time = time.time()
+                if top_gesture.category_name == "Thumb_Up" and len(index_finger_coords) > 0 and current_time - last_crop_time > cooldown_duration:
+                    # Filter coordinates that are less than 5 seconds old
+                    valid_coords = [(x, y) for x, y, t in index_finger_coords if current_time - t <= 5]
 
-            # Update gesture text
-            gesture_text = f"Right Hand: {top_gesture.category_name} ({top_gesture.score:.2f})"
+                    if valid_coords:
+                        # Calculate bounding box with BOUNDING_BOX_PADDING on each side
+                        x_coords, y_coords = zip(*valid_coords)
+                        min_x = max(0, min(x_coords) - BOUNDING_BOX_PADDING)
+                        max_x = min(capture_width, max(x_coords) + BOUNDING_BOX_PADDING)
+                        min_y = max(0, min(y_coords) - BOUNDING_BOX_PADDING)
+                        max_y = min(capture_height, max(y_coords) + BOUNDING_BOX_PADDING)
 
-            # If pointing up gesture is detected, save index finger tip coordinates with timestamp
-            if top_gesture.category_name == "Pointing_Up":
-                index_finger_tip = hand_landmarks[8]  # Index 8 corresponds to the tip of the index finger
-                x = int(index_finger_tip.x * capture_width)
-                y = int(index_finger_tip.y * capture_height)
-                index_finger_coords.append((x, y, time.time()))
+                        # Crop the original image
+                        cropped_image = original_image[min_y:max_y, min_x:max_x]
 
-            # Check if thumbs up gesture is detected and cooldown has passed
-            current_time = time.time()
-            if top_gesture.category_name == "Thumb_Up" and len(index_finger_coords) > 0 and current_time - last_crop_time > cooldown_duration:
-                # Filter coordinates that are less than 5 seconds old
-                valid_coords = [(x, y) for x, y, t in index_finger_coords if current_time - t <= 5]
+                        # Save the cropped image with timestamp
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"cropped_{timestamp}.png"
+                        cv2.imwrite(filename, cv2.cvtColor(cropped_image, cv2.COLOR_RGB2BGR))
+                        print(f"Saved cropped image: {filename}")
 
-                if valid_coords:
-                    # Calculate bounding box with 100px margin on each side
-                    x_coords, y_coords = zip(*valid_coords)
-                    EXTRA_SIDE_LENGTH = 20
-                    min_x, max_x = max(0, min(x_coords) - EXTRA_SIDE_LENGTH), min(capture_width, max(x_coords) + EXTRA_SIDE_LENGTH)
-                    min_y, max_y = max(0, min(y_coords) - EXTRA_SIDE_LENGTH), min(capture_height, max(y_coords) + EXTRA_SIDE_LENGTH)
+                        # Send the cropped image to OCR server using a separate thread
+                        ocr_thread = threading.Thread(target=send_image_to_ocr, args=(cropped_image, ocr_callback))
+                        ocr_thread.start()
 
-                    # Crop the original image
-                    cropped_image = original_image[min_y:max_y, min_x:max_x]
+                        ocr_status = "Sending to OCR server..."
+                        ocr_status_time = current_time
 
-                    # Save the cropped image with timestamp
-                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"cropped_{timestamp}.png"
-                    cv2.imwrite(filename, cv2.cvtColor(cropped_image, cv2.COLOR_RGB2BGR))
-                    print(f"Saved cropped image: {filename}")
+                        # Clear the coordinates
+                        index_finger_coords.clear()
 
-                    # Send the cropped image to OCR server
-                    ocr_status = send_image_to_ocr(cropped_image)
-                    ocr_status_time = current_time
+                        # Update last crop time and start display timer
+                        last_crop_time = current_time
+                        crop_display_start_time = current_time
 
-                    # Clear the coordinates
-                    index_finger_coords.clear()
+            else:
+                # If a hand is detected but it's not the right hand
+                gesture_text = "No right hand detected"
 
-                    # Update last crop time and start display timer
-                    last_crop_time = current_time
-                    crop_display_start_time = current_time
+        # Remove coordinates older than 5 seconds
+        current_time = time.time()
+        index_finger_coords = deque([(x, y, t) for x, y, t in index_finger_coords if current_time - t <= 5], maxlen=100)
 
+        # Draw the trajectory of the index finger tip on the display image
+        for i in range(1, len(index_finger_coords)):
+            cv2.line(display_image, (index_finger_coords[i-1][0], index_finger_coords[i-1][1]), 
+                     (index_finger_coords[i][0], index_finger_coords[i][1]), (255, 0, 0), 2)
+
+        # Display croppable status
+        time_since_last_crop = current_time - last_crop_time
+        if time_since_last_crop > cooldown_duration:
+            status_text = "CROPPABLE"
+            status_color = (0, 255, 0)  # Green
         else:
-            # If a hand is detected but it's not the right hand
-            gesture_text = "No right hand detected"
+            time_left = max(0, cooldown_duration - time_since_last_crop)
+            status_text = f"NOT CROPPABLE (Cooldown: {time_left:.1f}s)"
+            status_color = (0, 0, 255)  # Red
 
-    # Remove coordinates older than 5 seconds
-    current_time = time.time()
-    index_finger_coords = deque([(x, y, t) for x, y, t in index_finger_coords if current_time - t <= 5], maxlen=100)
+        # Create a semi-transparent overlay for the status background
+        overlay = display_image.copy()
+        cv2.rectangle(overlay, (0, 0), (400, 140), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.5, display_image, 0.5, 0, display_image)
 
-    # Draw the trajectory of the index finger tip on the display image
-    for i in range(1, len(index_finger_coords)):
-        cv2.line(display_image, (index_finger_coords[i-1][0], index_finger_coords[i-1][1]), 
-                 (index_finger_coords[i][0], index_finger_coords[i][1]), (255, 0, 0), 2)
+        # Display gesture text and status on the semi-transparent background
+        cv2.putText(display_image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(display_image, status_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, status_color, 2)
 
-    # Display croppable status
-    time_since_last_crop = current_time - last_crop_time
-    if time_since_last_crop > cooldown_duration:
-        status_text = "CROPPABLE"
-        status_color = (0, 255, 0)  # Green
-    else:
-        time_left = max(0, cooldown_duration - time_since_last_crop)
-        status_text = f"NOT CROPPABLE (Cooldown: {time_left:.1f}s)"
-        status_color = (0, 0, 255)  # Red
+        # Display OCR sending status
+        if current_time - ocr_status_time < ocr_status_duration:
+            cv2.putText(display_image, ocr_status, (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
 
-    # Create a semi-transparent overlay for the status background
-    overlay = display_image.copy()
-    cv2.rectangle(overlay, (0, 0), (400, 140), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.5, display_image, 0.5, 0, display_image)
+        # Display cropped image, OCR result, and success message if within display duration
+        if cropped_image is not None and current_time - crop_display_start_time < crop_display_duration:
+            # Resize cropped image to fit in the bottom right corner
+            display_height, display_width = display_image.shape[:2]
+            cropped_height, cropped_width = cropped_image.shape[:2]
+            max_cropped_height = int(display_height * 0.3)
+            max_cropped_width = int(display_width * 0.3)
+            scale = min(max_cropped_height / cropped_height, max_cropped_width / cropped_width)
+            resized_cropped = cv2.resize(cropped_image, (int(cropped_width * scale), int(cropped_height * scale)))
 
-    # Display gesture text and status on the semi-transparent background
-    cv2.putText(display_image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.putText(display_image, status_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, status_color, 2)
+            # Calculate position for cropped image
+            y_offset = display_height - resized_cropped.shape[0] - 10
+            x_offset = display_width - resized_cropped.shape[1] - 10
 
-    # Display OCR sending status
-    if current_time - ocr_status_time < ocr_status_duration:
-        cv2.putText(display_image, ocr_status, (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+            # Overlay cropped image on display image
+            display_image[y_offset:y_offset+resized_cropped.shape[0], x_offset:x_offset+resized_cropped.shape[1]] = resized_cropped
 
-    # Display cropped image and success message if within display duration
-    if cropped_image is not None and current_time - crop_display_start_time < crop_display_duration:
-        # Resize cropped image to fit in the bottom right corner
-        display_height, display_width = display_image.shape[:2]
-        cropped_height, cropped_width = cropped_image.shape[:2]
-        max_cropped_height = int(display_height * 0.3)
-        max_cropped_width = int(display_width * 0.3)
-        scale = min(max_cropped_height / cropped_height, max_cropped_width / cropped_width)
-        resized_cropped = cv2.resize(cropped_image, (int(cropped_width * scale), int(cropped_height * scale)))
+            # Add success message
+            cv2.putText(display_image, "Image cropped!", (x_offset, y_offset - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # Calculate position for cropped image
-        y_offset = display_height - resized_cropped.shape[0] - 10
-        x_offset = display_width - resized_cropped.shape[1] - 10
+            # Display OCR result text with black background
+            if ocr_result_text:
+                # Split the OCR result text into lines
+                lines = ocr_result_text.split('\n')
+                text_height = len(lines) * 30  # Assuming 30 pixels per line
+                text_width = max(len(line) * 10 for line in lines)  # Assuming 10 pixels per character
 
-        # Overlay cropped image on display image
-        display_image[y_offset:y_offset+resized_cropped.shape[0], x_offset:x_offset+resized_cropped.shape[1]] = resized_cropped
+                # Create a black background for the text
+                text_bg = np.zeros((text_height + 20, text_width + 20, 3), dtype=np.uint8)
+                
+                # Position the text background in the bottom left corner
+                bg_y_offset = display_height - text_height - 30
+                display_image[bg_y_offset:bg_y_offset+text_height+20, 10:text_width+30] = text_bg
 
-        # Add success message
-        cv2.putText(display_image, "Image cropped!", (x_offset, y_offset - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                # Add OCR text
+                for i, line in enumerate(lines):
+                    
+                    cv2.putText(display_image, line, (20, bg_y_offset + 30 + i * 30), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-    # Display the image
-    cv2.imshow('Right Hand Gesture Recognition', cv2.cvtColor(display_image, cv2.COLOR_RGB2BGR))
+        # Display the image
+        cv2.imshow('Right Hand Gesture Recognition', cv2.cvtColor(display_image, cv2.COLOR_RGB2BGR))
 
-    # Break the loop when 'q' is pressed
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+        # Break the loop when 'q' is pressed
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main_loop()
