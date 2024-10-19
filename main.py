@@ -8,6 +8,7 @@ import win32gui
 import win32ui
 from ctypes import windll
 from PIL import Image
+from collections import deque
 
 def get_window_rect(window_title):
     hwnd = win32gui.FindWindow(None, window_title)
@@ -73,9 +74,9 @@ options = vision.GestureRecognizerOptions(
 recognizer = vision.GestureRecognizer.create_from_options(options)
 
 # Specify the window title to capture
-window_title = "Casting"  # Changed from "Notepad" to "Casting"
-capture_width = 1500  # Set capture width to 1500
-capture_height = 1500  # Set capture height to 1500
+window_title = "Casting"
+capture_width = 1500
+capture_height = 1500
 
 try:
     window_rect = get_window_rect(window_title)
@@ -85,6 +86,9 @@ except Exception as e:
 
 cv2.namedWindow("Right Hand Gesture Recognition", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("Right Hand Gesture Recognition", capture_width, capture_height)
+
+# Initialize deque to store index finger tip coordinates
+index_finger_coords = deque(maxlen=20)
 
 while True:
     # Capture window content
@@ -124,6 +128,21 @@ while True:
             # Display gesture
             gesture_text = f"Right Hand: {top_gesture.category_name} ({top_gesture.score:.2f})"
             cv2.putText(image, gesture_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+            # If pointing up gesture is detected, save index finger tip coordinates
+            if top_gesture.category_name == "Pointing_Up":
+                index_finger_tip = hand_landmarks[8]  # Index 8 corresponds to the tip of the index finger
+                x = int(index_finger_tip.x * capture_width)
+                y = int(index_finger_tip.y * capture_height)
+                index_finger_coords.append((x, y))
+
+                # Draw a circle at the index finger tip
+                cv2.circle(image, (x, y), 10, (0, 0, 255), -1)
+
+            # Draw the trajectory of the index finger tip
+            for i in range(1, len(index_finger_coords)):
+                cv2.line(image, index_finger_coords[i-1], index_finger_coords[i], (255, 0, 0), 2)
+
         else:
             # If a hand is detected but it's not the right hand
             cv2.putText(image, "No right hand detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
